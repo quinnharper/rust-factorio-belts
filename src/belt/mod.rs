@@ -103,6 +103,53 @@ impl<T> BeltLine<T> {
         self.front_uncompressed.is_none()
     }
 
+    pub fn insert_at_position(&mut self, position: u32, item: T) {
+        let (index, item_position) = self
+            .iter_positions()
+            .into_iter()
+            .enumerate()
+            .find(|(_index, (item_position, _))| *item_position > position)
+            .map_or((0, 0), |(index, (item_position, _))| (index, item_position));
+
+        let ahead_position = self
+            .elements
+            .get(index)
+            .map_or(0, |element| item_position.strict_sub(element.front_gap));
+
+        let gap_ahead = position - ahead_position;
+
+        self.insert_behind(index, gap_ahead, item);
+    }
+
+    pub fn take_at_index(&mut self, index: usize) -> Option<T> {
+        let elem = self.elements.remove(index);
+        if let Some(taken) = &elem
+            && let Some(behind) = self.elements.get_mut(index)
+        {
+            behind.front_gap += taken.front_gap;
+        }
+
+        elem.map(
+            |BeltElement {
+                 front_gap: _,
+                 contents,
+             }| contents,
+        )
+    }
+
+    fn insert_behind(&mut self, index: usize, gap_ahead: u32, item: T) {
+        if let Some(behind) = self.elements.get_mut(index) {
+            behind.front_gap = behind.front_gap.strict_sub(gap_ahead);
+        }
+        self.elements.insert(
+            index,
+            BeltElement {
+                front_gap: gap_ahead,
+                contents: item,
+            },
+        );
+    }
+
     fn move_from(&mut self, index: &mut Option<NonMaxUsize>, movement_left: &mut u32) -> u32 {
         let front_gap = self.properties.item_separation();
 
