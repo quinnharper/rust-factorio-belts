@@ -1,5 +1,15 @@
 use crate::util::NonMaxUsize;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, ops::Range};
+
+pub struct BeltLineLocationRange {
+    start: u32,
+    end: u32,
+}
+impl BeltLineLocationRange {
+    pub const fn new(Range { start, end }: Range<u32>) -> Self {
+        Self { start, end }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct BeltLineProperties {
@@ -37,6 +47,17 @@ struct BeltElement<T> {
     contents: T,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BeltPositionIndex {
+    position: u32,
+    index: usize,
+}
+impl BeltPositionIndex {
+    const ZERO: BeltPositionIndex = BeltPositionIndex {
+        position: 0,
+        index: 0,
+    };
+}
 #[derive(Debug, Clone)]
 pub struct BeltLine<T> {
     /// Element 0 is the front of the belt.
@@ -45,6 +66,7 @@ pub struct BeltLine<T> {
     front_uncompressed: Option<NonMaxUsize>,
     /// Index of the next over-compressed item, after the front-most over-compressed item
     next_overcompressed: Option<NonMaxUsize>,
+    position_index_cache: Option<BeltPositionIndex>,
     properties: BeltLineProperties,
 }
 
@@ -54,6 +76,7 @@ impl<T> BeltLine<T> {
             elements: VecDeque::new(),
             front_uncompressed: None,
             next_overcompressed: None,
+            position_index_cache: None,
             properties,
         }
     }
@@ -104,12 +127,54 @@ impl<T> BeltLine<T> {
     }
 
     pub fn insert_at_position(&mut self, position: u32, item: T) {
+        let hint = self.get_hint_for_position(position);
+
+        self.insert_at_position_with_hint(position, item, hint);
+    }
+
+    fn get_hint_for_index_with_hint(
+        &self,
+        index: usize,
+        hint: BeltPositionIndex,
+    ) -> Option<BeltPositionIndex> {
+        todo!()
+    }
+    fn get_hint_for_index(&self, index: usize) -> Option<BeltPositionIndex> {
+        if self.elements.len() > index {
+            let position = self
+                .elements
+                .range(0..index)
+                .map(|elem| elem.front_gap)
+                .sum();
+
+            Some(BeltPositionIndex { position, index })
+        } else {
+            None
+        }
+    }
+
+    fn get_hint_for_position(&self, position: u32) -> BeltPositionIndex {
+        let index = {
+            let mut pos = 0;
+            self.elements.iter().enumerate().find_map(|(index, elem)| {
+                pos += elem.front_gap;
+                if pos < position { None } else { Some(index) }
+            })
+        }
+        .unwrap_or(0);
+        BeltPositionIndex { position, index }
+    }
+
+    fn insert_at_position_with_hint(&mut self, position: u32, item: T, hint: BeltPositionIndex) {
         let (index, item_position) = self
-            .iter_positions()
+            .iter_positions_from_hint(hint)
             .into_iter()
             .enumerate()
             .find(|(_index, (item_position, _))| *item_position > position)
-            .map_or((0, 0), |(index, (item_position, _))| (index, item_position));
+            .map_or(
+                (hint.index, hint.position),
+                |(index, (item_position, _))| (index, item_position),
+            );
 
         let ahead_position = self
             .elements
@@ -118,7 +183,7 @@ impl<T> BeltLine<T> {
 
         let gap_ahead = position - ahead_position;
 
-        self.insert_behind(index, gap_ahead, item);
+        self.insert_ahead(index, gap_ahead, item);
     }
 
     pub fn take_at_index(&mut self, index: usize) -> Option<T> {
@@ -137,10 +202,28 @@ impl<T> BeltLine<T> {
         )
     }
 
-    fn insert_behind(&mut self, index: usize, gap_ahead: u32, item: T) {
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.elements.get(index).map(|x| &x.contents)
+    }
+
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        self.elements.get_mut(index).map(|x| &mut x.contents)
+    }
+
+    fn insert_ahead(&mut self, index: usize, gap_ahead: u32, item: T) {
         if let Some(behind) = self.elements.get_mut(index) {
             behind.front_gap = behind.front_gap.strict_sub(gap_ahead);
         }
+
+        if let Some(cache) = &mut self.position_index_cache {
+            // Cache reset
+            if cache.index > index {
+                cache.index += 1
+            } else if cache.index == index {
+                self.position_index_cache = None;
+            }
+        }
+
         self.elements.insert(
             index,
             BeltElement {
@@ -205,6 +288,11 @@ impl<T> BeltLine<T> {
             let decompress_amount = compress_amount.min(decompress_budget);
             self.elements[index].front_gap += decompress_amount;
             decompress_budget -= decompress_amount;
+            if let Some(cache) = &mut self.position_index_cache {
+                if cache.index == index {
+                    cache.position += decompress_amount;
+                }
+            }
 
             self.move_from(
                 &mut NonMaxUsize::new(index + 1),
@@ -221,8 +309,18 @@ impl<T> BeltLine<T> {
     }
 
     pub fn iter_positions(&self) -> impl IntoIterator<Item = (u32, &T)> {
-        let mut position = 0;
-        self.elements.iter().map(move |x| {
+        self.iter_positions_from_hint(BeltPositionIndex {
+            position: self.elements.get(0).map_or(0, |elem| elem.front_gap),
+            index: 0,
+        })
+    }
+
+    fn iter_positions_from_hint(
+        &self,
+        hint: BeltPositionIndex,
+    ) -> impl IntoIterator<Item = (u32, &T)> {
+        let mut position = hint.position;
+        self.elements.iter().skip(hint.index).map(move |x| {
             position += x.front_gap;
             (position, &x.contents)
         })
@@ -266,4 +364,88 @@ impl<T> BeltLine<T> {
         self.ascii_art_display_to(&mut string);
         string
     }
+
+    pub fn slice_location(&self, start: u32, end: u32) -> BeltLineView<'_, T> {
+        let hint = self.get_hint_for_position(start);
+        BeltLineView {
+            beltline: self,
+            hint: hint,
+            range: BeltLineLocationRange {
+                start,
+                end: end.max(start),
+            },
+        }
+    }
+    pub fn slice_location_mut(&mut self, start: u32, end: u32) -> BeltLineViewMut<'_, T> {
+        let hint = self.get_hint_for_position(start);
+        BeltLineViewMut {
+            beltline: self,
+            hint: hint,
+            range: BeltLineLocationRange {
+                start,
+                end: end.max(start),
+            },
+        }
+    }
+    pub fn slice_index(&self, start: usize, end: usize) -> BeltLineView<'_, T> {
+        if let Some(hint) = self.get_hint_for_index(start) {
+            let end_pos = if let Some(end_hint) = self.get_hint_for_index(end) {
+                end_hint.position
+            } else {
+                // Does not panic: There's definitely an element in the vecdeque
+                self.get_hint_for_index_with_hint(self.elements.len() - 1, hint)
+                    .expect("It's not empty")
+                    .position
+                    + 1
+            };
+            BeltLineView {
+                beltline: self,
+                hint,
+                range: BeltLineLocationRange::new(hint.position..end_pos),
+            }
+        } else {
+            BeltLineView {
+                beltline: self,
+                hint: BeltPositionIndex::ZERO,
+                range: BeltLineLocationRange::new(0..0),
+            }
+        }
+    }
+    pub fn slice_index_mut(&mut self, start: usize, end: usize) -> BeltLineViewMut<'_, T> {
+        if let Some(hint) = self.get_hint_for_index(start) {
+            let end_pos = if let Some(end_hint) = self.get_hint_for_index(end) {
+                end_hint.position
+            } else {
+                // Does not panic: There's definitely an element in the vecdeque
+                self.get_hint_for_index_with_hint(self.elements.len() - 1, hint)
+                    .expect("It's not empty")
+                    .position
+                    + 1
+            };
+            BeltLineViewMut {
+                beltline: self,
+                hint,
+                range: BeltLineLocationRange::new(hint.position..end_pos),
+            }
+        } else {
+            BeltLineViewMut {
+                beltline: self,
+                hint: BeltPositionIndex::ZERO,
+                range: BeltLineLocationRange::new(0..0),
+            }
+        }
+    }
+}
+
+pub struct BeltLineView<'a, T> {
+    beltline: &'a BeltLine<T>,
+    /// Some position before the first element in the location range
+    hint: BeltPositionIndex,
+    range: BeltLineLocationRange,
+}
+pub struct BeltLineViewMut<'a, T> {
+    beltline: &'a mut BeltLine<T>,
+    /// Some position before the first element in the location range
+    hint: BeltPositionIndex,
+    range: BeltLineLocationRange,
 }
