@@ -1,3 +1,5 @@
+use std::cmp;
+
 #[derive(Debug)]
 pub(crate) struct IdMapper<T> {
     permutation_mapper: Vec<Option<PermutationElement>>,
@@ -53,7 +55,7 @@ impl<T> IdMapper<T> {
             },
         }
     }
-    pub fn push(&mut self, item: T) -> Id {
+    pub(crate) fn push(&mut self, item: T) -> Id {
         let id = self.free_ids.get_new_id();
         let permutation_map_index = id.permutation_index;
         let permutation = Some(PermutationElement {
@@ -70,56 +72,105 @@ impl<T> IdMapper<T> {
         self.items.push((id.permutation_index, item));
         id
     }
-
     pub(crate) fn take(&mut self, id: Id) -> Option<T> {
-        let permutation = self.permutation_mapper.get(id.permutation_index)?.clone()?;
-        if permutation.generation == id.generation {
-            let modify_permutation_index = self.items.last().expect("There has to be something in the item list as there's something in the permutation mapper").0;
-            let (permutation_index, out) = self.items.swap_remove(permutation.item_index);
-            self.permutation_mapper[permutation_index] = None;
-            let took_last_element = self.items.len() == permutation.item_index;
+        let item_index = self.get_item_index_from_id(id)?;
 
-            debug_assert_eq!(
-                permutation_index, id.permutation_index,
-                "They should point at each other (logical invariant in this type)"
-            );
+        let modify_permutation_index = self.items.last().expect("There has to be something in the item list as there's something in the permutation mapper").0;
+        let (permutation_index, out) = self.items.swap_remove(item_index);
+        self.permutation_mapper[permutation_index] = None;
+        let took_last_element = self.items.len() == item_index;
 
-            if !took_last_element {
-                let perm_element =
-                    self.permutation_mapper[modify_permutation_index].expect("Logical invariant");
-                self.permutation_mapper[modify_permutation_index] = Some(PermutationElement {
-                    item_index: permutation.item_index,
-                    generation: perm_element.generation,
-                });
-            }
+        debug_assert_eq!(
+            permutation_index, id.permutation_index,
+            "They should point at each other (logical invariant in this type)"
+        );
 
-            Some(out)
-        } else {
-            None
+        if !took_last_element {
+            let perm_element =
+                self.permutation_mapper[modify_permutation_index].expect("Logical invariant");
+            self.permutation_mapper[modify_permutation_index] = Some(PermutationElement {
+                item_index,
+                generation: perm_element.generation,
+            });
         }
+
+        Some(out)
     }
-
     pub(crate) fn get(&self, id: Id) -> Option<&T> {
-        let permutation = self.permutation_mapper[id.permutation_index]?;
-        if id.generation == permutation.generation {
-            self.items.get(permutation.item_index).map(|(_, x)| x)
-        } else {
-            None
-        }
+        let item_index = self.get_item_index_from_id(id)?;
+        Some(
+            &self
+                .items
+                .get(item_index)
+                .expect("should be a valid item index")
+                .1,
+        )
     }
     pub(crate) fn get_mut(&mut self, id: Id) -> Option<&mut T> {
-        let permutation = self.permutation_mapper[id.permutation_index]?;
-        if id.generation == permutation.generation {
-            self.items.get_mut(permutation.item_index).map(|(_, x)| x)
-        } else {
-            None
-        }
+        let item_index = self.get_item_index_from_id(id)?;
+        Some(
+            &mut self
+                .items
+                .get_mut(item_index)
+                .expect("should be a valid item index")
+                .1,
+        )
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
         self.items.iter().map(|(_, t)| t)
     }
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.items.iter_mut().map(|(_, t)| t)
+    }
+    pub(crate) const fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub(crate) fn sort(&mut self)
+    where
+        T: Ord,
+    {
+        self.sort_by(Ord::cmp)
+    }
+    pub(crate) fn sort_by<F>(&mut self, mut compare: F)
+    where
+        F: FnMut(&T, &T) -> cmp::Ordering,
+    {
+        self.items.sort_unstable_by(|(_, a), (_, b)| compare(a, b))
+    }
+    /// Swaps 2 elements in the internal `Vec` such that the element referenced by `id`
+    /// is yielded as the `index`th element in `self.iter`
+    ///
+    /// # Panics
+    ///
+    /// Panics if `target_index` was out of bounds (`target_index >= self.len()`)
+    pub(crate) fn swap_to_index(&mut self, id: Id, target_index: usize) {
+        let Some(item_index) = self.get_item_index_from_id(id) else {
+            #[cfg(test)]
+            eprintln!(
+                "Trying to swap to an index but the id was invalid. This might be intentional"
+            );
+            return;
+        };
+        self.items.swap(item_index, target_index);
+        self.permutation_for_mut(item_index).item_index = item_index;
+        self.permutation_for_mut(target_index).item_index = target_index;
+    }
+
+    pub(crate) fn permutation_for_mut(&mut self, item_index: usize) -> &mut PermutationElement {
+        let permutation_index = self.items[item_index].0;
+        self.permutation_mapper[permutation_index]
+            .as_mut()
+            .expect("Logical invariant: Items must point back to their permutation")
+    }
+
+    pub(crate) fn get_item_index_from_id(&self, id: Id) -> Option<usize> {
+        let permutation = self.permutation_mapper.get(id.permutation_index)?.clone()?;
+        if permutation.generation == id.generation {
+            Some(permutation.item_index)
+        } else {
+            None
+        }
     }
 }
 
