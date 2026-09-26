@@ -484,10 +484,35 @@ impl<T> BeltLineSystem<T> {
     fn connect_belt(&mut self, from_id: Id, to_id: Id, is_priority: bool) {
         match is_priority {
             true => self.end_extend_belt(from_id, to_id),
-            false => todo!(),
+            false => self.sideload_belt(from_id, to_id),
         }
     }
-    fn end_extend_belt(&mut self, from_id: Id, to_id: Id) {}
-    fn sideload_belt(&mut self, from_id: Id, to_id: Id) {}
-    fn tick(&mut self) {}
+    fn end_extend_belt(&mut self, from_id: Id, to_id: Id) {
+        // Strategy: we need to move `from_id` just after `to_id`
+        todo!()
+    }
+    fn sideload_belt(&mut self, from_id: Id, to_id: Id) {
+        // Strategy: we need `from_id` to be after `to_id`
+        todo!()
+    }
+    fn tick(&mut self) {
+        // Strategy, iterate from front to end of `self.beltlines`
+        for BeltLineInfo {
+            beltline,
+            roll_onto,
+            roll_from,
+        } in self.beltlines.iter_mut()
+        {
+            if let Some(roll_onto) = roll_onto {
+                // Strategy: we have something in front
+                // Take items off the front based on the speed of self and the next roll onto
+                // Push items onto the next roll onto
+                //
+                // ugh but that's gonna kill my lifespans :(
+                // i gotta do an iteration over ids not over references
+            }
+            beltline.tick();
+        }
+        todo!()
+    }
 }
