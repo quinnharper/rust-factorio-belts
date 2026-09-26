@@ -1,4 +1,4 @@
-use crate::util::NonMaxUsize;
+use crate::util::{Id, IdMapper, NonMaxUsize};
 use std::{collections::VecDeque, ops::Range};
 
 pub struct BeltLineLocationRange {
@@ -448,4 +448,46 @@ pub struct BeltLineViewMut<'a, T> {
     /// Some position before the first element in the location range
     hint: BeltPositionIndex,
     range: BeltLineLocationRange,
+}
+
+struct RollOntoInfo {
+    to: Id,
+    to_point: u32,
+    is_priority: bool,
+}
+struct PriorityRollFromInfo {
+    from: Id,
+}
+
+struct BeltLineInfo<T> {
+    beltline: BeltLine<T>,
+    /// Maybe it doesn't roll onto anything
+    roll_onto: Option<RollOntoInfo>,
+    roll_from: Option<PriorityRollFromInfo>,
+}
+
+pub struct BeltLineSystem<T> {
+    beltlines: IdMapper<BeltLineInfo<T>>,
+}
+
+impl<T> BeltLineSystem<T> {
+    fn sort(&mut self) {
+        todo!()
+    }
+    fn disconnect_belt(&mut self, id: Id) {
+        if let Some(beltline_info) = self.beltlines.get_mut(id) {
+            beltline_info.roll_onto = None;
+            // Reordering is not necessary
+        }
+    }
+
+    fn connect_belt(&mut self, from_id: Id, to_id: Id, is_priority: bool) {
+        match is_priority {
+            true => self.end_extend_belt(from_id, to_id),
+            false => todo!(),
+        }
+    }
+    fn end_extend_belt(&mut self, from_id: Id, to_id: Id) {}
+    fn sideload_belt(&mut self, from_id: Id, to_id: Id) {}
+    fn tick(&mut self) {}
 }
